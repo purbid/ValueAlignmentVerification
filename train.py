@@ -18,6 +18,7 @@ from sklearn.utils import resample
 import math
 from datasets import load_dataset
 import random
+import pickle as pkl
 
 parser = argparse.ArgumentParser()
 
@@ -45,9 +46,28 @@ parser.add_argument(
     "-dataset",
     choices = [
         "Owishiboo/grammar-correction",
-        "jhu-clsp/jfleg"
+        "jhu-clsp/jfleg",
     ],
     required=True,
+)
+
+parser.add_argument(
+    "-customData",
+    type=str,
+    help="Path to file containing dataset for 'custom' dataset",
+    default=""
+)
+
+parser.add_argument(
+    "-customRedundant",
+    type=str,
+    help="Path to file containing redundant indices for 'custom' dataset"
+)
+
+parser.add_argument(
+    "-customNonRedundant",
+    type=str,
+    help="Path to file containing redundant indices for 'custom' dataset"
 )
 
 parser.add_argument(
@@ -68,7 +88,7 @@ parser.add_argument(
     "-numEpochs",
     type=int,
     help="Number of epochs to train model for",
-    default=5
+    default=1
 )
 
 parser.add_argument(
@@ -82,7 +102,7 @@ parser.add_argument(
     "-learningRate",
     type=float,
     help="Learning rate for optimizer",
-    default=0.001
+    default=0.00001
 )
 
 parser.add_argument(
@@ -140,68 +160,127 @@ parser.add_argument(
     default=None,
 )
 
+parser.add_argument(
+    "-noise",
+    type=float,
+    help="Noise in [0, 1] to add to training (0: No Noise, 1: Full noise) Default: 0",
+    default=0.0
+)
+
 #---------------------------------------------------------------------------
 class OwishibooGrammarCorrectionDataset:
-    def __init__(self, input, target, tokenizer, maxLength=1024):
+    def __init__(self, input, target, tokenizer, maxLength=1024, noise=0.0):
         assert len(input)==len(target), f"[OwishibooGrammarCorrectionDataset] Expected input ({len(input)}) and target ({len(target)}) to be of the same length!"
         self.input = input
         self.target = target
         self.tokenizer = tokenizer
         self.maxLength = maxLength
         self.dataset = "Owishiboo/grammar-correction"
+        assert  0 <= noise <= 1, "Noise should be in [0, 1] (0:  no noise, 1: full noise)"
+        self.noise = noise
 
     def __len__(self):
         return len(self.input)
     
     def __getitem__(self, item):
         curInstance = {}
-        curInstance["preferred"] = self.tokenizer.encode_plus(
-            self.target[item],
-            padding="max_length",
-            truncation=True,
-            max_length=self.maxLength,
-            return_tensors="pt"
-        )
+        addNoise = True if np.random.rand() >= (1-self.noise) else False
 
-        curInstance["dispreferred"] = self.tokenizer.encode_plus(
-            self.input[item],
-            padding="max_length",
-            truncation=True,
-            max_length=self.maxLength,
-            return_tensors="pt"
-        )
-        return curInstance["preferred"]["input_ids"].squeeze(), curInstance["preferred"]["attention_mask"].squeeze(), curInstance["dispreferred"]["input_ids"].squeeze(), curInstance["dispreferred"]["attention_mask"].squeeze(), self.target[item], self.input[item]
+        if addNoise:
+            curInstance["dispreferred"] = self.tokenizer.encode_plus(
+                self.target[item],
+                padding="max_length",
+                truncation=True,
+                max_length=self.maxLength,
+                return_tensors="pt"
+            )
+
+            curInstance["preferred"] = self.tokenizer.encode_plus(
+                self.input[item],
+                padding="max_length",
+                truncation=True,
+                max_length=self.maxLength,
+                return_tensors="pt"
+            )
+
+            inp, target = self.target[item], self.input[item]
+        else:
+            curInstance["preferred"] = self.tokenizer.encode_plus(
+                self.target[item],
+                padding="max_length",
+                truncation=True,
+                max_length=self.maxLength,
+                return_tensors="pt"
+            )
+
+            curInstance["dispreferred"] = self.tokenizer.encode_plus(
+                self.input[item],
+                padding="max_length",
+                truncation=True,
+                max_length=self.maxLength,
+                return_tensors="pt"
+            )
+
+            target, inp = self.target[item], self.input[item]
+
+        return curInstance["preferred"]["input_ids"].squeeze(), curInstance["preferred"]["attention_mask"].squeeze(), curInstance["dispreferred"]["input_ids"].squeeze(), curInstance["dispreferred"]["attention_mask"].squeeze(), target, inp
 #---------------------------------------------------------------------------
 class JFLEGDataset:
-    def __init__(self, input, target, tokenizer, maxLength=1024):
+    def __init__(self, input, target, tokenizer, maxLength=1024, noise=0.0):
         assert len(input)==len(target), f"[JFLEGDataset] Expected input ({len(input)}) and target ({len(target)}) to be of the same length!"
         self.input = input
         self.target = target
         self.tokenizer = tokenizer
         self.maxLength = maxLength
         self.dataset = "jhu-clsp/jfleg"
+        assert  0 <= noise <= 1, "Noise should be in [0, 1] (0:  no noise, 1: full noise)"
+        self.noise = noise
 
     def __len__(self):
         return len(self.input)
     
     def __getitem__(self, item):
         curInstance = {}
-        curInstance["preferred"] = self.tokenizer.encode_plus(
-            self.target[item],
-            padding="max_length",
-            truncation=True,
-            max_length=self.maxLength,
-            return_tensors="pt"
-        )
+        addNoise = True if np.random.rand() >= (1-self.noise) else False
 
-        curInstance["dispreferred"] = self.tokenizer.encode_plus(
-            self.input[item],
-            padding="max_length",
-            truncation=True,
-            max_length=self.maxLength,
-            return_tensors="pt"
-        )
-        return curInstance["preferred"]["input_ids"].squeeze(), curInstance["preferred"]["attention_mask"].squeeze(), curInstance["dispreferred"]["input_ids"].squeeze(), curInstance["dispreferred"]["attention_mask"].squeeze(), self.target[item], self.input[item]
+        if addNoise:
+            curInstance["dispreferred"] = self.tokenizer.encode_plus(
+                self.target[item],
+                padding="max_length",
+                truncation=True,
+                max_length=self.maxLength,
+                return_tensors="pt"
+            )
+
+            curInstance["preferred"] = self.tokenizer.encode_plus(
+                self.input[item],
+                padding="max_length",
+                truncation=True,
+                max_length=self.maxLength,
+                return_tensors="pt"
+            )
+
+            inp, target = self.target[item], self.input[item]
+        else:
+            curInstance["preferred"] = self.tokenizer.encode_plus(
+                self.target[item],
+                padding="max_length",
+                truncation=True,
+                max_length=self.maxLength,
+                return_tensors="pt"
+            )
+
+            curInstance["dispreferred"] = self.tokenizer.encode_plus(
+                self.input[item],
+                padding="max_length",
+                truncation=True,
+                max_length=self.maxLength,
+                return_tensors="pt"
+            )
+
+            target, inp = self.target[item], self.input[item]
+
+        return curInstance["preferred"]["input_ids"].squeeze(), curInstance["preferred"]["attention_mask"].squeeze(), curInstance["dispreferred"]["input_ids"].squeeze(), curInstance["dispreferred"]["attention_mask"].squeeze(), target, inp
 #---------------------------------------------------------------------------
 def collateBatch(batch):
     pref_input_ids, pref_attention_mask, dispref_input_ids, dispref_attention_mask, prefText, disprefText = zip(*batch)
@@ -220,20 +299,22 @@ def collateBatch(batch):
         }
     }
 #---------------------------------------------------------------------------
-def createDataLoader(df, dataset, batchSize, tokenizer, maxLength=1024):
+def createDataLoader(df, dataset, batchSize, tokenizer, maxLength=1024, noise=0.0):
     if dataset == "Owishiboo/grammar-correction":
         ds = OwishibooGrammarCorrectionDataset(
             input = df["input"].to_numpy(), 
             target = df["target"].to_numpy(), 
             tokenizer = tokenizer,
-            maxLength = maxLength   
+            maxLength = maxLength,
+            noise=noise,   
         )
     elif dataset == "jhu-clsp/jfleg":
         ds = JFLEGDataset(
             input = df["sentence"].to_numpy(), 
             target = pd.DataFrame(df["corrections"].to_list(), columns=['ann1', 'ann2', 'ann3', 'ann4'])["ann1"].to_numpy(), 
             tokenizer = tokenizer,
-            maxLength = maxLength   
+            maxLength = maxLength,
+            noise=noise, 
         )
     else:
         raise ValueError("[createDataLoader] {} is not supported!".format(dataset))
@@ -330,10 +411,10 @@ def testModel(model, dataLoader, dataDesc="Test batch", writeToFile=None):
             outputsPref = model(d["preferred"])
             outputsDispref = model(d["dispreferred"])
             allPreds.extend((outputsPref>=outputsDispref).view(-1).tolist())
-            if writeToFile:
+            if writeToFile != None:
                 for i in torch.where((outputsPref>=outputsDispref).view(-1)==False)[0].tolist():
                     failure.append(((d["text"]["preferred"][i], outputsPref[i][0].item()), (d["text"]["dispreferred"][i], outputsDispref[i][0].item()))) 
-    if writeToFile:
+    if writeToFile != None:
         with open(writeToFile, "w") as f: 
             for fEx in failure:
                 f.write("Difference: {}".format(fEx[0][1]-fEx[1][1]))
@@ -378,7 +459,10 @@ def checkFile(fileName, fileExtension=None):
 #---------------------------------------------------------------------------
 def readFile(fileName):
     data = []
-    if fileName.endswith(".csv"):
+    if fileName.endswith(".pkl"):
+        with open(fileName, "rb") as f: 
+            data = pkl.load(f)
+    elif fileName.endswith(".csv"):
         with open(fileName, "r") as f: 
             data = list(csv.DictReader(f))
     elif fileName.endswith(".json"):
@@ -427,7 +511,20 @@ def main():
 
     logging.info(args)
 
-    if args.dataset == "Owishiboo/grammar-correction":
+    if args.customData != "":
+        checkFile(args.customData, ".pkl")
+        checkFile(args.customRedundant, ".pkl")
+        checkFile(args.customNonRedundant, ".pkl")
+
+        data = readFile(args.customData)
+        redundant_inds = readFile(args.customRedundant)
+        non_redundant_inds = readFile(args.customNonRedundant)
+
+        trainData = np.array(data)[redundant_inds] #redundantData
+        valData = np.array(data)[non_redundant_inds] #nonRedundantData
+        ranData = np.random.choice(data, len(non_redundant_inds), replace=False)
+        dataSizes = [len(data), len(redundant_inds), len(non_redundant_inds)]
+    elif args.dataset == "Owishiboo/grammar-correction":
         ds = load_dataset(args.dataset, split="train")
         ds = ds.shuffle()
         ds = ds.train_test_split(test_size=args.valSplit)
@@ -441,14 +538,18 @@ def main():
 
     trainDF = pd.DataFrame.from_records(trainData)
     valDF = pd.DataFrame.from_records(valData)
+    if args.customData != "":
+        ranDF = pd.DataFrame.from_records(ranData)
 
     trainDF.to_json("{}train.json".format(args.saveModelPath), orient="records")
     valDF.to_json("{}val.json".format(args.saveModelPath), orient="records")
 
     tokenizer = AutoTokenizer.from_pretrained(args.modelPath, cache_dir=args.cacheDir)
 
-    trainDataLoader = createDataLoader(trainDF, args.dataset, args.batchSize, tokenizer, args.maxLength)
-    valDataLoader = createDataLoader(valDF, args.dataset, args.batchSize, tokenizer, args.maxLength)
+    trainDataLoader = createDataLoader(trainDF, args.dataset, args.batchSize, tokenizer, args.maxLength, args.noise)
+    valDataLoader = createDataLoader(valDF, args.dataset, args.batchSize, tokenizer, args.maxLength, noise=0.0)
+    if args.customData != "":
+        ranDataLoader = createDataLoader(ranDF, args.dataset, args.batchSize, tokenizer, args.maxLength, noise=0.0)
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -458,13 +559,37 @@ def main():
     if args.introspect: 
         logging.info("Introspecting model at {}".format(args.introspect))
         model = torch.load(args.introspect)
-        valAcc = testModel(
-            model, 
-            valDataLoader, 
-            dataDesc="Validation batch", 
-            writeToFile="./introspect.txt"
-        )
-        logging.info("Validation Accuracy: {}".format(valAcc))
+        if args.customData != "":
+            redAcc = testModel(
+                model, 
+                trainDataLoader, 
+                dataDesc="Redundant batch", 
+            )
+            
+            nonAcc = testModel(
+                model, 
+                valDataLoader, 
+                dataDesc="Non-redundant batch", 
+            )
+
+            ranAcc = testModel(
+                model, 
+                ranDataLoader, 
+                dataDesc="Random batch", 
+            )
+
+            logging.info("Redundant Accuracy ({:0.2f}%): {:0.2f}%".format((dataSizes[1]/dataSizes[0])*100, redAcc*100))
+            logging.info("Non-redundant Accuracy ({:0.2f}%): {:0.2f}%".format((dataSizes[2]/dataSizes[0])*100, nonAcc*100))
+            logging.info("Overall Accuracy (100%): {:0.2f}%".format((((redAcc*dataSizes[1]) + (nonAcc*dataSizes[2]))/dataSizes[0])*100))
+            logging.info("Random Accuracy ({:0.2f}%): {:0.2f}%".format((dataSizes[2]/dataSizes[0])*100, ranAcc*100))
+        else: 
+            valAcc = testModel(
+                model, 
+                valDataLoader, 
+                dataDesc="Validation batch", 
+                writeToFile="./introspect.txt"
+            )
+            logging.info("Validation Accuracy: {:0.2f}%".format(valAcc*100))
     else:
         model = PreferenceModel(args.modelPath, args.cacheDir, device)
 

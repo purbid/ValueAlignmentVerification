@@ -20,7 +20,8 @@ IGNORE_TAG = "Ignore"
 NO_ERROR_TAG = "O"
 ERROR_TAG = "ERR"
 
-MAX_PASSES = 2
+# MAX_PASSES = 2
+MAX_PASSES = 50
 EPSILON = 0.01
 # EPSILON = 0.000001
 # EPSILON = 0
@@ -122,7 +123,13 @@ parser.add_argument(
 parser.add_argument(
     "-grammaticality",
     action="store_true",
-    help="Boolean flag to use grammaticality data (instead of preference/factuality data)"
+    help="Boolean flag to use grammaticality data (instead of preference/factuality/fluency data)"
+)
+
+parser.add_argument(
+    "-fluency",
+    action="store_true",
+    help="Boolean flag to use fluency data (instead of preference/factuality/grammaticality data)"
 )
 
 parser.add_argument(
@@ -142,6 +149,12 @@ parser.add_argument(
     type=int,
     help="Index to start from when checking for redundancies",
     default=0
+)
+
+parser.add_argument(
+    "-shuffle",
+    action="store_true",
+    help="Boolean flag to shuffle features set",
 )
 #----------------------------------------------------------------------
 class ClassificationHead(torch.nn.Module):
@@ -243,8 +256,8 @@ def main():
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
-    if args.factuality and args.grammaticality:
-        raise ValueError("Cannot use both factuality and grammaticality data simultaneously!")
+    if (args.factuality and args.grammaticality) or (args.factuality and args.fluency) or (args.fluency and args.grammaticality):
+        raise ValueError("Cannot use factuality/grammaticality/fluency data simultaneously!")
 
     if args.logFile:
         checkFile(args.logFile)
@@ -268,17 +281,27 @@ def main():
     random.seed(args.seed)
     np.random.seed(args.seed)
 
+    fileAddendum = [""]
+    if args.addEpsilon: 
+        fileAddendum.append("epsilon")
+    if args.grammaticality:
+        fileAddendum.append("grammaticality")
+    elif args.fluency:
+        fileAddendum.append("fluency")
+    elif args.factuality:
+        fileAddendum.append("factuality")
+    if args.shuffle:
+        fileAddendum.append(str(args.seed))
+
+    fileEnding = "_".join(fileAddendum)
+    #Do not include seed in features file name
+    featuresFileEnding = "_".join(fileAddendum[:-1])
+
     features = []
     if args.loadFeats:
-        if args.factuality:
-            with open("features_factuality.pkl","rb") as f:
-                features = pkl.load(f) 
-        elif args.grammaticality:
-            with open("features_grammaticality.pkl","rb") as f:
-                features = pkl.load(f) 
-        else: 
-            with open("features.pkl","rb") as f:
-                features = pkl.load(f) 
+        checkFile("features{}.pkl".format(featuresFileEnding))
+        with open("features{}.pkl".format(featuresFileEnding),"rb") as f:
+            features = pkl.load(f) 
     else:
         # Read the datasets
         data_files = {}
@@ -286,13 +309,13 @@ def main():
         extension = args.data.split(".")[-1]
         raw_datasets = load_dataset(extension, data_files=data_files)
 
-
-        if args.grammaticality:
-            if torch.cuda.is_available():
-                device = torch.device("cuda")
-            else:
-                device = torch.device("cpu")
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        else:
+            device = torch.device("cpu")
+        if args.grammaticality or args.fluency:
             model = torch.load(args.model)
+            model = model.to(device)
             tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL, cache_dir=args.cache_dir)
         else:
             config = AutoConfig.from_pretrained(
@@ -306,6 +329,7 @@ def main():
                     from_tf=bool(".ckpt" in args.model),
                     config=config,
                 )
+                model = model.to(device)
                 tokenizer = AutoTokenizer.from_pretrained(
                     args.model,
                     use_fast=True,
@@ -317,6 +341,7 @@ def main():
                     from_tf=bool(".ckpt" in args.model),
                     config=config,
                 )
+                model = model.to(device)
                 tokenizer = AutoTokenizer.from_pretrained(
                     args.model,
                     use_fast=True,
@@ -325,7 +350,7 @@ def main():
         # Preprocessing the dataset
         # Padding strategy
         padding = "max_length" if args.pad_to_max_length else False
-
+        #----------------------------------------------------------------------
         def process_annotations(annotations):
             examples = []
 
@@ -398,7 +423,7 @@ def main():
                         examples.append(example)
 
             return examples
-        
+        #----------------------------------------------------------------------
         def tokenize_and_align_labels(examples, input_column="text"):
             proInp = {
                 "text": {},
@@ -426,29 +451,30 @@ def main():
             proInp["corrected_pred"] = tokenized_inputs_corrected_pred
 
             return proInp
-        
-        # def tokenize_grammaticality(example):
-        #     instance = {}
-        #     instance["preferred"] = tokenizer.encode_plus(
-        #         example["target"],
-        #         padding="max_length",
-        #         truncation=True,
-        #         max_length=args.max_seq_length,
-        #         return_tensors="pt"
-        #     )
-
-        #     instance["dispreferred"] = tokenizer.encode_plus(
-        #         example["input"],
-        #         padding="max_length",
-        #         truncation=True,
-        #         max_length=args.max_seq_length,
-        #         return_tensors="pt"
-        #     )
-
-        #     return instance
-
-        #JFLEG Dataset
+        #----------------------------------------------------------------------
+        #Owishiboo/grammar-correction
         def tokenize_grammaticality(example):
+            instance = {}
+            instance["preferred"] = tokenizer.encode_plus(
+                example["target"],
+                padding="max_length",
+                truncation=True,
+                max_length=args.max_seq_length,
+                return_tensors="pt"
+            )
+
+            instance["dispreferred"] = tokenizer.encode_plus(
+                example["input"],
+                padding="max_length",
+                truncation=True,
+                max_length=args.max_seq_length,
+                return_tensors="pt"
+            )
+
+            return instance
+        #----------------------------------------------------------------------
+        #JFLEG Dataset
+        def tokenize_fluency(example):
             instance = {}
             instance["preferred"] = tokenizer.encode_plus(
                 example["corrections"][0],
@@ -467,10 +493,18 @@ def main():
             )
 
             return instance
+        #----------------------------------------------------------------------
     
         if args.grammaticality:
             train_dataset = raw_datasets["train"].map(
                 tokenize_grammaticality,
+                batched=False,
+                load_from_cache_file=False,
+                desc="Running tokenizer on train dataset",
+            )
+        elif args.fluency:
+            train_dataset = raw_datasets["train"].map(
+                tokenize_fluency,
                 batched=False,
                 load_from_cache_file=False,
                 desc="Running tokenizer on train dataset",
@@ -485,19 +519,12 @@ def main():
         else:
             train_dataset = process_annotations(raw_datasets["train"])
 
-        if args.grammaticality:
-            with open("train_dataset_grammaticality.pkl", "wb") as f:
-                pkl.dump(train_dataset, f)
-        elif args.factuality:
-            with open("train_dataset_factuality.pkl", "wb") as f:
-                pkl.dump(train_dataset, f)
-        else:
-            with open("train_dataset.pkl", "wb") as f:
-                pkl.dump(train_dataset, f)
+        with open("train_dataset{}.pkl".format(fileEnding), "wb") as f:
+            pkl.dump(train_dataset, f)
 
         model.eval()
         with torch.no_grad():
-            if args.grammaticality:
+            if args.grammaticality or args.fluency:
                 for d in tqdm(train_dataset, desc="Featurizing dataset"):
                     d["preferred"] = {k:torch.tensor(v) for (k,v) in d["preferred"].items()}
                     d["dispreferred"] = {k:torch.tensor(v) for (k,v) in d["dispreferred"].items()}
@@ -509,76 +536,64 @@ def main():
                         d["dispreferred"],
                         return_last_hidden_state=True,
                     )
-                    f1 = feat_1.squeeze()
-                    f2 = feat_2.squeeze()
+                    f1 = feat_1.cpu().squeeze()
+                    f2 = feat_2.cpu().squeeze()
                     features.append((f1-f2).cpu())
                     logging.info("Shape: {}".format(features[-1].shape))
             elif args.factuality:
                 for d in tqdm(train_dataset, desc="Featurizing dataset"):
                     feat_1 = model(
-                        input_ids=torch.tensor(d["corrected_pred"]["input_ids"]).unsqueeze(0),
-                        attention_mask=torch.tensor(d["corrected_pred"]["attention_mask"]).unsqueeze(0)
+                        input_ids=torch.tensor(d["corrected_pred"]["input_ids"]).unsqueeze(0).to(device),
+                        attention_mask=torch.tensor(d["corrected_pred"]["attention_mask"]).unsqueeze(0).to(device)
                     )
                     feat_2 = model(
-                        input_ids=torch.tensor(d["text"]["input_ids"]).unsqueeze(0),
-                        attention_mask=torch.tensor(d["text"]["attention_mask"]).unsqueeze(0)
+                        input_ids=torch.tensor(d["text"]["input_ids"]).unsqueeze(0).to(device),
+                        attention_mask=torch.tensor(d["text"]["attention_mask"]).unsqueeze(0).to(device)
                     )
-                    f1 = feat_1["sequence_output"].squeeze(0).sum(0)
-                    f2 = feat_2["sequence_output"].squeeze(0).sum(0)
+                    f1 = feat_1["sequence_output"].cpu().squeeze(0).sum(0)
+                    f2 = feat_2["sequence_output"].cpu().squeeze(0).sum(0)
                     features.append(f1-f2) 
                     logging.info("Shape: {}".format(features[-1].shape))
             else:
                 for d in tqdm(train_dataset, desc="Featurizing dataset"):
-                    feat_1 = model(d["pred1"])
-                    feat_2 = model(d["pred2"])
-                    features.append(feat_1["phi"].squeeze()-feat_2["phi"].squeeze()) 
+                    feat_1 = model(d["pred1"].to(device))
+                    feat_2 = model(d["pred2"].to(device))
+                    features.append(feat_1["phi"].cpu().squeeze()-feat_2["phi"].cpu().squeeze()) 
                     logging.info("Shape: {}".format(features[-1].shape))
         features = torch.stack(features)
         logging.info("Shape: {}".format(features.shape))
 
-        if args.grammaticality:
-            with open("features_grammaticality.pkl", "wb") as f:
-                pkl.dump(features, f)
-        elif args.factuality:
-            with open("features_factuality.pkl", "wb") as f:
-                pkl.dump(features, f)
-        else:
-            with open("features.pkl", "wb") as f:
-                pkl.dump(features, f)
-
-    fileAddendum = []
-    if args.addEpsilon: 
-        fileAddendum.append("epsilon")
-    if args.grammaticality:
-        fileAddendum.append("grammaticality")
-    elif args.factuality:
-        fileAddendum.append("factuality")
-
-    fileEnding = "_".join(fileAddendum)
+        with open("features{}.pkl".format(featuresFileEnding), "wb") as f:
+            pkl.dump(features, f)
     
     non_redundant_inds = np.arange(len(features))
+    if args.shuffle: 
+        logging.info("Shuffling features using seed: {}".format(args.seed))
+        non_redundant_inds = np.random.choice(np.arange(len(features)), len(features), replace=False)
+        with open("features_shuffleOrder{}.pkl".format(fileEnding), "wb") as f: 
+            pkl.dump(non_redundant_inds, f)
     redundant_inds = []
     failure_inds = []
 
     #Support for checkpointing
     if args.start > 0:
-        checkIfExists(f"indsToTest_{fileEnding}.pkl", isDir=False, createIfNotExists=False)
-        checkIfExists(f"redundant_{fileEnding}.pkl", isDir=False, createIfNotExists=False)
-        checkIfExists(f"non_redundant_{fileEnding}.pkl", isDir=False, createIfNotExists=False)
-        checkIfExists(f"failure_{fileEnding}.pkl", isDir=False, createIfNotExists=False)
+        checkIfExists(f"indsToTest{fileEnding}.pkl", isDir=False, createIfNotExists=False)
+        checkIfExists(f"redundant{fileEnding}.pkl", isDir=False, createIfNotExists=False)
+        checkIfExists(f"non_redundant{fileEnding}.pkl", isDir=False, createIfNotExists=False)
+        checkIfExists(f"failure{fileEnding}.pkl", isDir=False, createIfNotExists=False)
 
         logging.info("Starting from {}".format(args.start))
 
-        with open(f"indsToTest_{fileEnding}.pkl", "rb") as f: 
+        with open(f"indsToTest{fileEnding}.pkl", "rb") as f: 
             indsToTest = pkl.load(f)
 
-        with open(f"redundant_{fileEnding}.pkl", "rb") as f: 
+        with open(f"redundant{fileEnding}.pkl", "rb") as f: 
             redundant_inds = pkl.load(f)
         
-        with open(f"non_redundant_{fileEnding}.pkl", "rb") as f: 
+        with open(f"non_redundant{fileEnding}.pkl", "rb") as f: 
             non_redundant_inds = pkl.load(f)
         
-        with open(f"failure_{fileEnding}.pkl", "rb") as f: 
+        with open(f"failure{fileEnding}.pkl", "rb") as f: 
             failure_inds = pkl.load(f)
 
     def objFunc(x, *funcArgs):
@@ -617,16 +632,16 @@ def main():
             if i%25 == 0: 
                 logging.info("Stats:\nTested: {}\nRedundant: {}\nNon-redundant: {}\nFailure: {}".format(i, numRedundant, i-numRedundant-numFailure, numFailure))
                 #Support for checkpointing
-                with open(f"indsToTest_{fileEnding}.pkl", "wb") as f: 
+                with open(f"indsToTest{fileEnding}.pkl", "wb") as f: 
                     pkl.dump(indsToTest, f)
 
-                with open(f"redundant_{fileEnding}.pkl", "wb") as f: 
+                with open(f"redundant{fileEnding}.pkl", "wb") as f: 
                     pkl.dump(redundant_inds, f)
                 
-                with open(f"non_redundant_{fileEnding}.pkl", "wb") as f: 
+                with open(f"non_redundant{fileEnding}.pkl", "wb") as f: 
                     pkl.dump(non_redundant_inds, f)
                 
-                with open(f"failure_{fileEnding}.pkl", "wb") as f: 
+                with open(f"failure{fileEnding}.pkl", "wb") as f: 
                     pkl.dump(failure_inds, f)
 
             numTries = 0
@@ -698,19 +713,23 @@ def main():
             "failure": failure_inds.copy()
         }
 
-        with open(f"results_{fileEnding}.pkl", "wb") as f: 
+        with open(f"results{fileEnding}.pkl", "wb") as f: 
             pkl.dump(results, f)
 
-    with open(f"results_{fileEnding}.pkl", "wb") as f: 
+        if numRedundant == 0:
+            logging.info("No new redundant pairs found. Exiting...")
+            break
+
+    with open(f"results{fileEnding}.pkl", "wb") as f: 
         pkl.dump(results, f)
 
-    with open(f"redundant_{fileEnding}.pkl", "wb") as f: 
+    with open(f"redundant{fileEnding}.pkl", "wb") as f: 
         pkl.dump(redundant_inds, f)
 
-    with open(f"non_redundant_{fileEnding}.pkl", "wb") as f: 
+    with open(f"non_redundant{fileEnding}.pkl", "wb") as f: 
         pkl.dump(non_redundant_inds, f)
 
-    with open(f"failure_{fileEnding}.pkl", "wb") as f: 
+    with open(f"failure{fileEnding}.pkl", "wb") as f: 
         pkl.dump(failure_inds, f)
 
     logging.info("End of all passes:\nStats:\nTested: {}\nRedundant: {}\nNon-redundant: {}\nFailure: {}".format(len(features), len(redundant_inds), len(non_redundant_inds), len(failure_inds)))
