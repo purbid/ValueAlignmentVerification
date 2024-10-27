@@ -92,6 +92,7 @@ import os
 import torch
 import logging
 import argparse
+import numpy as np
 import pickle as pkl
 from tqdm import tqdm
 from datasets import load_dataset
@@ -131,10 +132,18 @@ def filter_dataset(dataset, filter_by_subset):
 
     return dataset
 
-
 def process_examples(model, tokenizer, dataset, device, args):
     """Process dataset examples and compute features."""
-    features = []
+    
+    features_chosen = []
+    features_chosen_full_length = []
+
+    features_rejected = []
+    features_rejected_full_length = []
+    
+    chosen_scores = []
+    rejected_scores = []
+
     for example in tqdm(dataset, desc="Processing examples"):
         prompt = example['prompt']
         chosen_completion = example['chosen']
@@ -153,6 +162,12 @@ def process_examples(model, tokenizer, dataset, device, args):
             output_1 = model(**conv1_tokenized, output_hidden_states=True)
             output_2 = model(**conv2_tokenized, output_hidden_states=True)
 
+            score_chosen = output_1.logits[0][0].item()
+            score_rejected = output_2.logits[0][0].item()
+
+            chosen_scores.append(score_chosen)
+            rejected_scores.append(score_rejected)
+
             hidden_states1 = output_1.hidden_states
             hidden_states2 = output_2.hidden_states
 
@@ -160,30 +175,34 @@ def process_examples(model, tokenizer, dataset, device, args):
             cls_embedding1 = hidden_states1[-1][:, -1, :].cpu().squeeze()
             cls_embedding2 = hidden_states2[-1][:, -1, :].cpu().squeeze()
             
-
             if args.shorten_size:
-                features.append((cls_embedding1 - cls_embedding2)[:args.shorten_size].cpu())
+                features_chosen.append(cls_embedding1[:int(args.shorten_size)].cpu())
+                features_rejected.append(cls_embedding2[:int(args.shorten_size)].cpu())
+
+                features_chosen_full_length.append(cls_embedding1.cpu())
+                features_rejected_full_length.append(cls_embedding2.cpu())
+
+                # features.append((cls_embedding1 - cls_embedding2)[:int(args.shorten_size)].cpu())
+                # features_full_length.append((cls_embedding1 - cls_embedding2).cpu())
             else:
-                features.append((cls_embedding1 - cls_embedding2).cpu())
-    return torch.stack(features)
+                features_chosen.append(cls_embedding1.cpu())
+                features_rejected.append(cls_embedding2.cpu())
+
+    return torch.stack(features_chosen), torch.stack(features_rejected), \
+            torch.stack(features_chosen_full_length),  torch.stack(features_rejected_full_length), \
+            chosen_scores, rejected_scores
 
 
 def main():
     args = parse_args()
-
     model_name = "Skywork/Skywork-Reward-Llama-3.1-8B"
 
-
-    logging_directory_path = "~/logging/"
+    # logging_directory_path = "~/logging/"
     logging_directory_path = "/uufs/chpc.utah.edu/common/home/u1472659/ValueAlignmentVerification/logging/"
     os.makedirs(logging_directory_path, exist_ok=True)
     model_name_short = model_name.split('/')[-1]
 
-    print(args.shorten_size)
-    print(type(args.shorten_size))
-    exit()        
-
-    logging.basicConfig(filename=os.path.join(logging_directory_path, f"{model_name_short}_for_{args.filter_by_subset}.txt"), filemode='w',
+    logging.basicConfig(filename=os.path.join(logging_directory_path, f"{model_name_short}_for_{args.filter_by_subset}_{args.shorten_size}.txt"), filemode='w',
                         level=logging.INFO)
 
     cache_directory = "/scratch/general/vast/u1472659/huggingface_cache/"
@@ -210,14 +229,52 @@ def main():
     logging.info("Model downloaded and cached")
 
     # Process the examples
-    features = process_examples(model, tokenizer, filtered_dataset, device, args)
+    features_chosen, features_rejected, features_chosen_full_length, features_rejected_full_length, \
+    chosen_scores, rejected_scores = process_examples(model, tokenizer, filtered_dataset, device, args)
+    
+    ###check the 87.4% accuracy for skyworks model.
+    chosen_np_arr = np.array(chosen_scores)
+    rejected_np_arr = np.array(rejected_scores)
 
+    comparison = chosen_np_arr > rejected_np_arr
+
+    # Calculate the percentage where list A's elements are greater
+    percentage = np.mean(comparison) * 100
+
+    logging.info("the percentage where score of chosen is greater than rej is {}".format(percentage))
+    print("the percentage where score of chosen is greater than rej is {}".format(percentage))
+    
+    base_directory_for_features = "features"
+    model_directory = os.path.join(base_directory_for_features, model_name_short)
+    os.makedirs(model_directory, exist_ok=True)
+
+    with open(os.path.join(model_directory, 'scores_chosen.pkl'), 'wb') as f:
+        pkl.dump(chosen_np_arr, f)
+
+    with open(os.path.join(model_directory, 'scores_rejected.pkl'), 'wb') as f:
+        pkl.dump(rejected_np_arr, f)
+    
     # Save features to a file
-    logging.info(f"Shape: {features.shape}")
-    with open(f"features_{model_name_short}_for_{args.filter_by_subset}.pkl", "wb") as f:
-        pkl.dump(features, f)
+    logging.info(f"Shape of features chosen is : {features_chosen.shape}")
+    logging.info(f"Shape of features rejection is : {features_rejected.shape}")
 
+    for save_name, features_var in zip(['features_chosen', 'features_rejected', 'features_chosen_full_length', 'features_rejected_full_length'], [features_chosen, features_rejected, features_chosen_full_length, features_rejected_full_length]):
+
+        if len(features_var) > 0:
+            if 'full_length' in save_name:
+                features_size = '' #no suffix neaded, default is 4096
+            else:
+                features_size = str(args.shorten_size)
+
+            with open(os.path.join(model_directory, '{}_{}{}.pkl'.format(save_name, args.filter_by_subset, features_size)), 'wb') as f:
+                pkl.dump(features_var, f)
+
+        # if len(features_full_length) > 0:
+        #     with open(os.path.join(model_directory, 'features_diff_full_length_{}.pkl'.format(args.filter_by_subset)), 'wb') as f:
+        #         pkl.dump(features_full_length, f)
 
 if __name__ == "__main__":
+
+
     main()
 
