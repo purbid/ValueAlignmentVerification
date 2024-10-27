@@ -88,45 +88,51 @@
 # with open("features{}.pkl".format(model_name_short), "wb") as f:
 #     pkl.dump(features, f)
 
-
 import os
 import torch
 import logging
+import argparse
 import pickle as pkl
 from tqdm import tqdm
 from datasets import load_dataset
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
-import argparse
 
+
+filter_subsets_dict = {'chat': ['alpacaeval-easy', 'alpacaeval-length', 'alpacaeval-hard', 'mt-bench-easy', 'mt-bench-medium'],
+                        'chat_hard': [ 'mt-bench-hard', 'llmbar-natural', 'llmbar-adver-neighbor', 'llmbar-adver-GPTInst', 'llmbar-adver-GPTOut', 'llmbar-adver-manual'],
+                        'safety': ['refusals-dangerous', 'refusals-offensive', 'xstest-should-refuse', 'xstest-should-respond', 'do not answer'],
+                        'reasoning': ['math-prm', 'hep-cpp', 'hep-go', 'hep-java', 'hep-js', 'hep-python', 'hep-rust']}
 
 def parse_args():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Process reward bench dataset with optional hard subset filtering.")
-    parser.add_argument("--chat_hard", action="store_true", help="Filter for hard subsets in the reward bench dataset.")
+    parser.add_argument("--filter_by_subset", default="chat_hard", help="Filter for hard subsets in the reward bench dataset.")
+    #parser.add_argument("--chat", action="store_true", help="Filter for regular/easy subsets in the reward bench dataset.")
+    parser.add_argument("--shorten_size", default="768", help="Take full feature length or only the first 768 dimensions")  
     return parser.parse_args()
 
 
-def filter_dataset(dataset, chat_hard):
+def filter_dataset(dataset, filter_by_subset):
 
-
-
-    chat_hard = True
     """Filter the dataset based on the subset field if chat_hard is enabled."""
-    if chat_hard:
-        hard_subsets = [
+    if filter_by_subset!= '':
+        include_only = filter_subsets_dict[filter_by_subset]
+        '''
+        [
             'mt-bench-hard', 'llmbar-natural', 'llmbar-adver-neighbor',
             'llmbar-adver-GPTInst', 'llmbar-adver-GPTOut', 'llmbar-adver-manual'
-        ]
+        ]''' 
+
         # Filter dataset based on the 'subset' field
-        filtered_dataset = [example for example in dataset if example['subset'] in hard_subsets]
-        print("the length of chat hard is {}".format(len(filtered_dataset)))
-        exit()
+        filtered_dataset = [example for example in dataset if example['subset'] in include_only]
+        logging.info("the length of chat hard is {}".format(len(filtered_dataset)))
+        
         return filtered_dataset
 
     return dataset
 
 
-def process_examples(model, tokenizer, dataset, device):
+def process_examples(model, tokenizer, dataset, device, args):
     """Process dataset examples and compute features."""
     features = []
     for example in tqdm(dataset, desc="Processing examples"):
@@ -153,9 +159,12 @@ def process_examples(model, tokenizer, dataset, device):
             # Get the last token embedding that isn't a PAD
             cls_embedding1 = hidden_states1[-1][:, -1, :].cpu().squeeze()
             cls_embedding2 = hidden_states2[-1][:, -1, :].cpu().squeeze()
+            
 
-            features.append((cls_embedding1 - cls_embedding2).cpu())
-
+            if args.shorten_size:
+                features.append((cls_embedding1 - cls_embedding2)[:args.shorten_size].cpu())
+            else:
+                features.append((cls_embedding1 - cls_embedding2).cpu())
     return torch.stack(features)
 
 
@@ -164,12 +173,17 @@ def main():
 
     model_name = "Skywork/Skywork-Reward-Llama-3.1-8B"
 
+
     logging_directory_path = "~/logging/"
-    logging_directory_path = "/uufs/chpc.utah.edu/common/home/u1472659/ValueAlignmentVerificationPurbid/logging/"
+    logging_directory_path = "/uufs/chpc.utah.edu/common/home/u1472659/ValueAlignmentVerification/logging/"
     os.makedirs(logging_directory_path, exist_ok=True)
     model_name_short = model_name.split('/')[-1]
 
-    logging.basicConfig(filename=os.path.join(logging_directory_path, f"{model_name_short}.txt"), filemode='w',
+    print(args.shorten_size)
+    print(type(args.shorten_size))
+    exit()        
+
+    logging.basicConfig(filename=os.path.join(logging_directory_path, f"{model_name_short}_for_{args.filter_by_subset}.txt"), filemode='w',
                         level=logging.INFO)
 
     cache_directory = "/scratch/general/vast/u1472659/huggingface_cache/"
@@ -179,7 +193,7 @@ def main():
     dataset = load_dataset('allenai/reward-bench', split='raw')
 
     # Filter dataset if chat_hard is enabled
-    filtered_dataset = filter_dataset(dataset, args.chat_hard)
+    filtered_dataset = filter_dataset(dataset, args.filter_by_subset)
 
     # Only load the model and tokenizer after filtering the dataset
     print("Loading model and tokenizer...")
@@ -196,11 +210,11 @@ def main():
     logging.info("Model downloaded and cached")
 
     # Process the examples
-    features = process_examples(model, tokenizer, filtered_dataset, device)
+    features = process_examples(model, tokenizer, filtered_dataset, device, args)
 
     # Save features to a file
     logging.info(f"Shape: {features.shape}")
-    with open(f"features_{model_name_short}.pkl", "wb") as f:
+    with open(f"features_{model_name_short}_for_{args.filter_by_subset}.pkl", "wb") as f:
         pkl.dump(features, f)
 
 
