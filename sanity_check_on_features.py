@@ -1,4 +1,4 @@
-# import os
+import os
 import torch
 # import pickle
 import argparse
@@ -7,7 +7,6 @@ import argparse
 # from sklearn.metrics import r2_score
 # from sklearn.linear_model import LinearRegression
 # from sklearn.model_selection import train_test_split
-
 
 def parse_args():
     """Parse command-line arguments."""
@@ -185,6 +184,21 @@ from sklearn.metrics import r2_score
 import matplotlib.pyplot as plt
 import os
 
+
+
+def load_from_pickle_handle_dtype(file_path):
+
+
+    with open(file_path, 'rb') as f:
+        features = pickle.load(f)
+
+    if isinstance(features, np.ndarray):
+        features = features.astype(np.float32)
+    elif isinstance(features, torch.Tensor):
+        features = features.to(torch.float32)
+
+    return features
+
 def load_data(base_dir):
     """Load all required data files and create random baseline"""
 
@@ -197,14 +211,21 @@ def load_data(base_dir):
     
     # Load each file
     print("Loading data files...")
-    with open(features_chosen_path, 'rb') as f:
-        features_chosen_4096 = pickle.load(f).to(torch.float32)
-    with open(features_rejected_path, 'rb') as f:
-        features_rejected_4096 = pickle.load(f).to(torch.float32)
-    with open(scores_chosen_path, 'rb') as f:
-        scores_chosen = pickle.load(f).astype(np.float32)
-    with open(scores_rejected_path, 'rb') as f:
-        scores_rejected = pickle.load(f).astype(np.float32)
+    # with open(features_chosen_path, 'rb') as f:
+    #     features_chosen_4096 = pickle.load(f)
+    # with open(features_rejected_path, 'rb') as f:
+    #     features_rejected_4096 = pickle.load(f).to(torch.float32)
+    # with open(scores_chosen_path, 'rb') as f:
+    #     scores_chosen = pickle.load(f).astype(np.float32)
+    # with open(scores_rejected_path, 'rb') as f:
+    #     scores_rejected = pickle.load(f).astype(np.float32)
+
+    features_chosen_4096 = load_from_pickle_handle_dtype(features_chosen_path)
+    features_rejected_4096 = load_from_pickle_handle_dtype(features_rejected_path)
+    scores_chosen = load_from_pickle_handle_dtype(scores_chosen_path)
+    scores_rejected = load_from_pickle_handle_dtype(scores_rejected_path)
+
+
     # # Construct full paths
     # features_chosen_path = os.path.join(base_dir, 'features_chosen_full_length.pkl')
     # features_rejected_path = os.path.join(base_dir, 'features_rejected_full_length.pkl')

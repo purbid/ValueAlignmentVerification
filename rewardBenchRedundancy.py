@@ -45,6 +45,14 @@ parser.add_argument(
     default=None
 )
 
+
+parser.add_argument(
+    "-featuresPath", 
+    type=str,
+    help="Path to file to print logging information",
+    default=None
+)
+
 parser.add_argument(
     "-data",
     type=str,
@@ -232,18 +240,17 @@ def main():
     random.seed(args.seed)
     np.random.seed(args.seed)
 
-
-
     features = []
     model_name_short = model_name.split('/')[-1]
     fileEnding = model_name_short
 
     if args.loadFeats:
-        checkFile("features{}.pkl".format(model_name_short))
-        with open("features{}.pkl".format(model_name_short), "rb") as f:
+        checkFile(args.featuresPath)
+        with open(args.featuresPath, "rb") as f:
+        # checkFile("features_{}.pkl".format(model_name_short))
+        # with open("features_{}.pkl".format(model_name_short), "rb") as f:
             features = pkl.load(f)
-            features = features.to(torch.float32)
-
+            # features = features.to(torch.float32)
     else:
         logging.error("did not get a features files; exiting")
         exit()
@@ -369,7 +376,7 @@ def main():
                         lb=lowerBound,
                         ub=upperBound,
                     ),
-                    #options=dict(maxiter=50),
+                    options=dict(maxiter=400),
                     args=(features[ind].squeeze(),)
                 )
                 if not np.isclose(m.x[:features[0].shape[0]], torch.zeros(features[ind].shape)).all():
