@@ -107,7 +107,7 @@ spacy-legacy==3.0.12
 spacy-loggers==1.0.5
 srsly==2.4.8
 stack-data==0.6.2
-tensorboard==2.10.0
+# tensorboard==2.10.0
 tensorboard-data-server==0.6.1
 tensorboard-plugin-wit==1.8.1
 thinc==8.1.12
